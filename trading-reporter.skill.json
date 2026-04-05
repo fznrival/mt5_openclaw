@@ -1,0 +1,56 @@
+{
+  "name": "trading-reporter",
+  "version": "1.0.0",
+  "description": "MT5 trading report generator. Kirim summary winrate, RR, PnL, dan statistik trading ke Telegram.",
+  "triggers": [
+    "kirim summary trading",
+    "laporan trading",
+    "trading report",
+    "winrate hari ini",
+    "profit loss hari ini",
+    "rekap trading",
+    "statistik trading",
+    "send trading summary",
+    "daily report trading",
+    "weekly report trading",
+    "monthly report trading"
+  ],
+  "actions": [
+    {
+      "id": "daily_report",
+      "name": "Kirim Laporan Harian",
+      "triggers": ["hari ini", "daily", "harian", "today"],
+      "command": "python3 ~/mt5_openclaw/python/trade_summary.py --period today"
+    },
+    {
+      "id": "weekly_report",
+      "name": "Kirim Laporan Mingguan",
+      "triggers": ["minggu ini", "weekly", "mingguan", "week"],
+      "command": "python3 ~/mt5_openclaw/python/trade_summary.py --period week"
+    },
+    {
+      "id": "monthly_report",
+      "name": "Kirim Laporan Bulanan",
+      "triggers": ["bulan ini", "monthly", "bulanan", "month"],
+      "command": "python3 ~/mt5_openclaw/python/trade_summary.py --period month"
+    },
+    {
+      "id": "all_time_report",
+      "name": "Kirim Laporan All Time",
+      "triggers": ["all time", "keseluruhan", "semua"],
+      "command": "python3 ~/mt5_openclaw/python/trade_summary.py --period all"
+    }
+  ],
+  "schedule": [
+    {
+      "cron": "0 23 * * 1-5",
+      "action": "daily_report",
+      "description": "Auto kirim daily report setiap hari Senin-Jumat jam 23:00 WIB"
+    },
+    {
+      "cron": "0 23 * * 5",
+      "action": "weekly_report",
+      "description": "Auto kirim weekly report setiap Jumat jam 23:00 WIB"
+    }
+  ]
+}
