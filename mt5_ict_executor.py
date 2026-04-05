@@ -8,91 +8,136 @@ import requests
 # =========================
 # LOAD CONFIG
 # =========================
-CONFIG_PATH = "config.json"
-
-if not os.path.exists(CONFIG_PATH):
-    raise FileNotFoundError("config.json tidak ditemukan")
-
-with open(CONFIG_PATH, "r") as f:
+with open("config.json", "r") as f:
     config = json.load(f)
 
 SYMBOL = config["trading"]["symbol"]
-TIMEFRAME = config["trading"]["timeframe"]
 LOT = config["trading"]["lot_size"]
 
-# Mapping timeframe ke MT5
-TIMEFRAME_MAP = {
-    1: mt5.TIMEFRAME_M1,
-    5: mt5.TIMEFRAME_M5,
-    15: mt5.TIMEFRAME_M15,
-    30: mt5.TIMEFRAME_M30,
-    60: mt5.TIMEFRAME_H1
-}
-
-MT5_TF = TIMEFRAME_MAP.get(TIMEFRAME, mt5.TIMEFRAME_M15)
+TF_ENTRY = mt5.TIMEFRAME_M5
+TF_HTF = mt5.TIMEFRAME_M15
 
 # =========================
 # TELEGRAM
 # =========================
-def send_telegram(message):
-    token = config.get("telegram_bot_token")
-    chat_id = config.get("telegram_chat_id")
-
-    if not token or not chat_id:
-        return
-
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-
+def send_telegram(msg):
     try:
+        url = f"https://api.telegram.org/bot{config['telegram_bot_token']}/sendMessage"
         requests.post(url, data={
-            "chat_id": chat_id,
-            "text": message,
-            "parse_mode": "Markdown"
+            "chat_id": config["telegram_chat_id"],
+            "text": msg
         })
-    except Exception as e:
-        print("Telegram Error:", e)
+    except:
+        pass
 
 # =========================
-# ICT SESSION CHECK
+# SESSION FILTER
 # =========================
-def is_market_open():
+def get_active_session():
     now = datetime.now().strftime("%H:%M")
-    sessions = config.get("sessions", {})
-
-    for session_name, time_range in sessions.items():
-        start, end = time_range
-
-        if start <= now <= end:
-            return session_name
-
+    for name, t in config["sessions"].items():
+        if t[0] <= now <= t[1]:
+            return name
     return None
 
 # =========================
-# SIMPLE FVG DETECTION
+# MARKET DATA
+# =========================
+def get_data(tf, bars=100):
+    rates = mt5.copy_rates_from_pos(SYMBOL, tf, 0, bars)
+    return pd.DataFrame(rates)
+
+# =========================
+# HTF BIAS (SIMPLE STRUCTURE)
+# =========================
+def get_htf_bias(df):
+    if df['close'].iloc[-1] > df['close'].iloc[-5]:
+        return "bullish"
+    else:
+        return "bearish"
+
+# =========================
+# LIQUIDITY SWEEP
+# =========================
+def detect_sweep(df):
+    if df['high'].iloc[-1] > df['high'].iloc[-2]:
+        return "buy_sweep"
+    if df['low'].iloc[-1] < df['low'].iloc[-2]:
+        return "sell_sweep"
+    return None
+
+# =========================
+# DISPLACEMENT (STRONG CANDLE)
+# =========================
+def detect_displacement(df):
+    body = abs(df['close'].iloc[-1] - df['open'].iloc[-1])
+    avg_body = (df['high'] - df['low']).rolling(10).mean().iloc[-1]
+
+    if body > avg_body:
+        return True
+    return False
+
+# =========================
+# FVG VALID
 # =========================
 def detect_fvg(df):
-    for i in range(2, len(df)):
-        prev = df.iloc[i-2]
-        curr = df.iloc[i]
+    prev = df.iloc[-3]
+    mid = df.iloc[-2]
+    curr = df.iloc[-1]
 
-        # Bullish FVG
-        if prev['high'] < curr['low']:
-            return "buy"
+    # Bullish FVG
+    if prev['high'] < curr['low']:
+        return "buy"
 
-        # Bearish FVG
-        if prev['low'] > curr['high']:
-            return "sell"
+    # Bearish FVG
+    if prev['low'] > curr['high']:
+        return "sell"
 
     return None
 
 # =========================
-# ORDER EXECUTION
+# ENTRY MODEL (ICT REAL FLOW)
 # =========================
-def execute_trade(signal):
-    price = mt5.symbol_info_tick(SYMBOL).ask if signal == "buy" else mt5.symbol_info_tick(SYMBOL).bid
+def get_trade_signal(df_entry, df_htf, session):
+    bias = get_htf_bias(df_htf)
+    sweep = detect_sweep(df_entry)
+    displacement = detect_displacement(df_entry)
+    fvg = detect_fvg(df_entry)
 
-    sl = price - 100 * mt5.symbol_info(SYMBOL).point if signal == "buy" else price + 100 * mt5.symbol_info(SYMBOL).point
-    tp = price + 200 * mt5.symbol_info(SYMBOL).point if signal == "buy" else price - 200 * mt5.symbol_info(SYMBOL).point
+    if not sweep or not displacement or not fvg:
+        return None
+
+    # ALIGNMENT
+    if bias == "bullish" and sweep == "sell_sweep" and fvg == "buy":
+        return "buy"
+
+    if bias == "bearish" and sweep == "buy_sweep" and fvg == "sell":
+        return "sell"
+
+    return None
+
+# =========================
+# RISK MANAGEMENT (STRUCTURE BASED)
+# =========================
+def calculate_sl_tp(signal, df):
+    point = mt5.symbol_info(SYMBOL).point
+
+    if signal == "buy":
+        sl = df['low'].iloc[-3] - 5 * point
+        tp = df['high'].iloc[-1] + 20 * point
+    else:
+        sl = df['high'].iloc[-3] + 5 * point
+        tp = df['low'].iloc[-1] - 20 * point
+
+    return sl, tp
+
+# =========================
+# EXECUTION
+# =========================
+def execute_trade(signal, sl, tp):
+    tick = mt5.symbol_info_tick(SYMBOL)
+
+    price = tick.ask if signal == "buy" else tick.bid
 
     request = {
         "action": mt5.TRADE_ACTION_DEAL,
@@ -104,60 +149,63 @@ def execute_trade(signal):
         "tp": tp,
         "deviation": config["trading"]["slippage_dev"],
         "magic": config["trading"]["magic_number"],
-        "comment": "ICT_BOT",
+        "comment": "ICT_SCALP",
         "type_time": mt5.ORDER_TIME_GTC,
         "type_filling": mt5.ORDER_FILLING_IOC,
     }
 
-    result = mt5.order_send(request)
-    return result
+    return mt5.order_send(request)
 
 # =========================
-# MAIN LOGIC
+# POSITION FILTER
 # =========================
-def run_ict_scanner():
-    active_session = is_market_open()
+def has_open_position():
+    positions = mt5.positions_get(symbol=SYMBOL)
+    return positions is not None and len(positions) > 0
 
-    if not active_session:
-        print("Bukan jam ICT Killzone")
+# =========================
+# MAIN
+# =========================
+def run():
+    session = get_active_session()
+
+    if not session:
+        print("Outside killzone")
         return
-
-    print(f"[{datetime.now().strftime('%H:%M:%S')}] Session: {active_session}")
 
     if not mt5.initialize():
-        print("MT5 gagal initialize")
+        print("MT5 gagal")
         return
 
-    rates = mt5.copy_rates_from_pos(SYMBOL, MT5_TF, 0, 100)
-
-    if rates is None:
-        print("Gagal ambil data")
+    if has_open_position():
+        print("Masih ada posisi")
         mt5.shutdown()
         return
 
-    df = pd.DataFrame(rates)
+    df_entry = get_data(mt5.TIMEFRAME_M5)
+    df_htf = get_data(mt5.TIMEFRAME_M15)
 
-    signal = detect_fvg(df)
+    signal = get_trade_signal(df_entry, df_htf, session)
 
     if signal:
-        result = execute_trade(signal)
+        sl, tp = calculate_sl_tp(signal, df_entry)
+        result = execute_trade(signal, sl, tp)
 
         msg = f"""
-⚡ *ICT {active_session.upper()} EXECUTION*
-📌 Symbol: {SYMBOL}
-📊 Signal: {signal.upper()}
-🕒 Time: {datetime.now().strftime('%H:%M:%S')}
+ICT SCALP EXECUTED
+Session: {session}
+Signal: {signal}
+SL: {sl}
+TP: {tp}
 """
-
         print(msg)
         send_telegram(msg)
+
     else:
-        print("Tidak ada setup")
+        print("No valid setup")
 
     mt5.shutdown()
 
 # =========================
-# RUN
-# =========================
 if __name__ == "__main__":
-    run_ict_scanner()
+    run()
