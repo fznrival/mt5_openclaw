@@ -1,9 +1,16 @@
 {
-  "telegram_bot_token": "YOUR_BOT_TOKEN_HERE",
+  "telegram_bot_token": "YOUR_TOKEN_HERE",
   "telegram_chat_id": "YOUR_CHAT_ID_HERE",
-  "csv_path": "/home/fznrival/mt5_data/trade_log.csv",
-  "account_balance": 1000.0,
+  "csv_path": "/home/user/mt5_data/trade_log.csv",
+  "account_balance": 10000.0,
   "currency": "USD",
-  "risk_per_trade_pct": 1.0,
-  "timezone_label": "WIB"
+  "timezone_label": "WIB",
+  "trading": {
+    "symbol": "USTECm",
+    "timeframe": 15,
+    "lot_size": 0.01,
+    "risk_reward_ratio": 2.0,
+    "magic_number": 2022001,
+    "slippage_dev": 20
+  }
 }
